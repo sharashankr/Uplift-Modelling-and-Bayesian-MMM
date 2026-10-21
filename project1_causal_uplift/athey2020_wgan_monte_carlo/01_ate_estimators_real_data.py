@@ -301,4 +301,61 @@ for d, df in data.items():
 
 # Reproduction: paper values (1.93 / 1.63 / 0.98) lie within our per-split ranges. DR did NOT reduce split
 # sensitivity vs RF weighting: extreme RF propensities (min_samples_leaf=1) x large earnings residuals
-# (low outcome-model R2, esp. in E) keep variance high. DR protects against bias, not against extreme weights.
+# (low outcome-model R2, esp. in E) keep variance high. DR protects against bias, not against extreme weights.Add DR random forest; document split sensitivity
+
+# %% Cell 6d: neural-net versions — tau_cm,nn / tau_ht,nn / tau_dr,nn (paper Section 4.1)
+from sklearn.neural_network import MLPRegressor, MLPClassifier
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+# Architecture is NOT reported in the paper. Choice: 2 hidden layers (64, 32), light L2 penalty,
+# early stopping on a 10% validation split to limit overfitting.
+NN_PARAMS = dict(hidden_layer_sizes=(64, 32), alpha=1e-3, max_iter=2000, early_stopping=True)
+NN_CLF_PARAMS = dict(hidden_layer_sizes=(64, 32), alpha=1e-2, max_iter=500)   # no early stopping (see note)
+
+
+def make_nn_regressor(seed):
+    return make_pipeline(StandardScaler(), MLPRegressor(**NN_PARAMS, random_state=seed))
+
+
+def make_nn_classifier(seed):
+    # Early stopping for MLPClassifier monitors validation ACCURACY. With 1.1% treated (CPS), an all-zero
+    # predictor is already 98.9% accurate, so training stops almost immediately and the propensity model
+    # stays near-constant. We train for a fixed number of iterations instead, with a stronger L2 penalty.
+    return make_pipeline(StandardScaler(), MLPClassifier(**NN_CLF_PARAMS, random_state=seed))
+
+
+def nn_family_once(df, seed):
+    """One split: fit both NN nuisance models once, return (outcome, weighting, DR) estimates."""
+    t, y = df.t.values, df.re78.values
+    mu0 = crossfit_mu0(df, make_nn_regressor, seed)
+    e = crossfit_e(df, make_nn_classifier, seed)
+    outcome = np.mean(y[t == 1] - mu0[t == 1])
+    return outcome, ipw_att_from_e(t, y, e), dr_att_from(t, y, mu0, e)
+
+
+def nn_family(df):
+    runs = np.array([nn_family_once(df, seed) for seed in range(N_REPEATS)])   # shape (repeats, 3)
+    return np.median(runs, axis=0)
+
+
+ESTIMATORS["Outcome: neural net"] = lambda df: nn_family(df)[0]
+ESTIMATORS["Propensity: neural net"] = lambda df: nn_family(df)[1]
+ESTIMATORS["DR: neural net"] = lambda df: nn_family(df)[2]
+
+# Quick check: per-split estimates for all three NN estimators
+for d, df in data.items():
+    runs = np.array([nn_family_once(df, seed) for seed in range(N_REPEATS)])
+    for j, name in enumerate(["outcome", "weighting", "DR"]):
+        print(f"{d:5s} {name:9s} per-split: {np.round(runs[:, j], 2)}  median={np.median(runs[:, j]):5.2f}")
+    print()
+
+# Did the propensity model learn? Mean e among trainees should be well above mean e among controls.
+for d, df in data.items():
+    e = crossfit_e(df, make_nn_classifier, 0)
+    print(f"{d:5s} mean e: trainees={e[df.t == 1].mean():.3f}  controls={e[df.t == 0].mean():.3f}  "
+          f"trimmed treated={((e > TRIM) & (df.t.values == 1)).sum()}")
+    
+# Reproduction: architecture/training not reported. 5/9 paper values within our per-split ranges, 2 marginal.
+# Trade-off: early-stopped classifier was ~constant (right for E, broke CPS/PSID weighting); fully trained
+# classifier separates CPS/PSID but overfits E (11 trainees trimmed in a randomised experiment). Not tuned further.
