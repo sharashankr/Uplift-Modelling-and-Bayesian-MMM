@@ -1,0 +1,12 @@
+# Data is downloaded by the scripts, never committed
+data/
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+.vscode/
