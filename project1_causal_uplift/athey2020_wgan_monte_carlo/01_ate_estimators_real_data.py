@@ -572,4 +572,22 @@ for d in ["CPS", "PSID"]:
             print(f"  balance={scale:12s} lambda={rule:3s}  median={np.median(ests):5.2f}  "
                   f"range=[{min(ests):5.2f}, {max(ests):5.2f}]")
 
+# %% Check: estimators module reproduces our numbers, now with SEs (paper Table 5 s.e. alongside)
+import sys
+HERE = Path(__file__).parent if "__file__" in globals() else Path.cwd()
+sys.path.insert(0, str(HERE))                       # so "import estimators" finds the file next to this script
+import importlib, estimators as est
+importlib.reload(est)                               # picks up edits to estimators.py without restarting
+
+PAPER_SE = {"DIFF": (0.63, 0.71, 1.15), "Outcome: linear": (0.57, 0.60, 0.60),
+            "Propensity: logit": (0.83, 0.77, 1.13), "DR: linear + logit": (0.67, 0.65, 0.97)}
+FUNCS = {"DIFF": est.att_naive, "Outcome: linear": est.att_outcome_linear,
+         "Propensity: logit": est.att_ipw_logit, "DR: linear + logit": est.att_dr_linear}
+
+print("HERE =", HERE)
+for name, f in FUNCS.items():
+    cells = [f(data[d]) for d in DESIGNS]
+    print(f"{name:20s} " + "   ".join(f"{d}: {r.att:5.2f} (se {r.se:.2f} | paper {p:.2f})"
+                                       for d, r, p in zip(DESIGNS, cells, PAPER_SE[name])))
+
 # %%
