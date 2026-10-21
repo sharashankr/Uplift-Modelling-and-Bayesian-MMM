@@ -218,3 +218,55 @@ for d in ["CPS", "PSID"]:
     for name, cfg in CONFIGS.items():
         med, lo, hi = att_rf_config(data[d], **cfg)
         print(f"  {name:22s} median={med:5.2f}   range=[{lo:5.2f}, {hi:5.2f}]")
+
+# %% Cell 6b: random forest propensity weighting with cross-fitting — tau_ht,rf (paper Section 4.1)
+from sklearn.ensemble import RandomForestClassifier
+
+RF_CLF_PARAMS = dict(n_estimators=500, min_samples_leaf=1, max_features="sqrt")   # R randomForest classification defaults
+
+
+def make_rf_classifier(seed):
+    return RandomForestClassifier(**RF_CLF_PARAMS, random_state=seed, n_jobs=-1)
+
+
+def crossfit_e(df, make_model, seed):
+    """Out-of-fold propensity scores e_hat(x) for EVERY unit; the model never sees the unit it predicts."""
+    X, t = df[COVARIATES], df.t.values
+    e = np.empty(len(df))
+    for train_idx, test_idx in StratifiedKFold(N_FOLDS, shuffle=True, random_state=seed).split(X, t):
+        model = make_model(seed).fit(X.iloc[train_idx], t[train_idx])
+        e[test_idx] = model.predict_proba(X.iloc[test_idx])[:, 1]
+    return e
+
+
+def ipw_att_from_e(t, y, e):
+    """Trimmed (e <= 0.95), normalised odds weighting — the same formula as Cell 4."""
+    keep = e <= TRIM
+    t, y, e = t[keep], y[keep], e[keep]
+    w = e / (1 - e)
+    return y[t == 1].mean() - np.sum(w[t == 0] * y[t == 0]) / np.sum(w[t == 0])
+
+
+def att_ipw_rf_once(df, seed):
+    e = crossfit_e(df, make_rf_classifier, seed)
+    return ipw_att_from_e(df.t.values, df.re78.values, e)
+
+
+def att_ipw_rf(df):
+    return np.median([att_ipw_rf_once(df, seed) for seed in range(N_REPEATS)])
+
+
+ESTIMATORS["Propensity: random forest"] = att_ipw_rf
+
+# Quick check: per-split estimates, median, and how many units trimming removes (seed 0)
+for d, df in data.items():
+    runs = [att_ipw_rf_once(df, seed) for seed in range(N_REPEATS)]
+    e0 = crossfit_e(df, make_rf_classifier, 0)
+    n_trim_t = ((e0 > TRIM) & (df.t.values == 1)).sum()
+    n_trim_c = ((e0 > TRIM) & (df.t.values == 0)).sum()
+    print(f"{d:5s} per-split: {np.round(runs, 2)}  median={np.median(runs):5.2f}  "
+          f"trimmed: {n_trim_t} treated, {n_trim_c} controls")
+
+# Reproduction: paper values (1.90 / 0.73 / 0.24) lie within or at the edge of our per-split ranges, but this
+# estimator is highly split-dependent (PSID range -0.32 to 1.27). Trimming drops up to 36/185 PSID trainees,
+# which changes the estimand to the ATT on trainees with overlap.
