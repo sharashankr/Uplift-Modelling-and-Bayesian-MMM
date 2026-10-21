@@ -415,4 +415,46 @@ ESTIMATORS["Causal forest"] = att_cf
 for d, df in data.items():
     runs = [att_cf_once(df, seed) for seed in range(N_REPEATS)]
     print(f"{d:5s} per-split: {np.round(runs, 2)}  median={np.median(runs):5.2f}")
-# %%
+
+# %% Cell 10: assemble Table 5 — ours vs paper (thousands of 1978 $)
+PAPER_TABLE5 = {                       #   E      CPS     PSID      (paper Table 5)
+    "DIFF":                       (1.79,  -8.50, -15.20),
+    "Matching: bias-corrected":   (2.12,   2.15,   0.57),
+    "Outcome: linear":            (1.79,   0.69,   0.79),
+    "Outcome: random forest":     (1.69,   0.85,  -0.20),
+    "Outcome: neural net":        (1.49,   1.70,   1.47),
+    "Propensity: logit":          (1.81,   1.18,   1.26),
+    "Propensity: random forest":  (1.90,   0.73,   0.24),
+    "Propensity: neural net":     (1.69,   1.38,   0.42),
+    "DR: linear + logit":         (1.80,   1.27,   1.50),
+    "DR: random forest":          (1.93,   1.63,   0.98),
+    "DR: neural net":             (1.90,   1.63,   1.56),
+    "Causal forest":              (1.72,   1.58,   0.59),
+    "Residual balancing":         (1.73,   0.93,   0.72),   # not reproduced: reference implementation is R (balanceHD)
+}
+
+# Fit the neural-net family ONCE per design (its three estimators share the same fitted models)
+NN_ROWS = {"Outcome: neural net": 0, "Propensity: neural net": 1, "DR: neural net": 2}
+nn_results = {d: nn_family(df) for d, df in data.items()}
+
+rows = []
+for name, paper in PAPER_TABLE5.items():
+    print(f"computing {name} ...", flush=True)
+    row = {"estimator": name}
+    for j, d in enumerate(DESIGNS):
+        if name in NN_ROWS:
+            ours = nn_results[d][NN_ROWS[name]]
+        elif name in ESTIMATORS:
+            ours = ESTIMATORS[name](data[d])
+        else:
+            ours = np.nan                                          # not reproduced
+        row[f"{d} ours"], row[f"{d} paper"] = round(float(ours), 2), paper[j]
+    rows.append(row)
+
+table5 = pd.DataFrame(rows).set_index("estimator")
+print("\n" + table5.to_string())
+
+RESULTS_DIR = DATA_DIR.parent / "results"
+RESULTS_DIR.mkdir(exist_ok=True)
+table5.to_csv(RESULTS_DIR / "table5_reproduction.csv")
+print(f"\nSaved to {RESULTS_DIR / 'table5_reproduction.csv'}")

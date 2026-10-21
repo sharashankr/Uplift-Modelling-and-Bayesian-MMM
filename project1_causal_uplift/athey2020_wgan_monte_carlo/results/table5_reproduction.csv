@@ -1,0 +1,14 @@
+estimator,E ours,E paper,CPS ours,CPS paper,PSID ours,PSID paper
+DIFF,1.79,1.79,-8.5,-8.5,-15.2,-15.2
+Matching: bias-corrected,1.77,2.12,2.2,2.15,-0.07,0.57
+Outcome: linear,1.79,1.79,0.69,0.69,0.79,0.79
+Outcome: random forest,1.71,1.69,1.1,0.85,-0.16,-0.2
+Outcome: neural net,2.6,1.49,1.53,1.7,0.77,1.47
+Propensity: logit,1.81,1.81,1.19,1.18,1.75,1.26
+Propensity: random forest,2.27,1.9,1.66,0.73,0.32,0.24
+Propensity: neural net,1.82,1.69,1.82,1.38,0.16,0.42
+DR: linear + logit,1.8,1.8,1.28,1.27,2.05,1.5
+DR: random forest,2.23,1.93,1.48,1.63,1.35,0.98
+DR: neural net,2.71,1.9,1.54,1.63,0.2,1.56
+Causal forest,1.7,1.72,1.8,1.58,0.45,0.59
+Residual balancing,,1.73,,0.93,,0.72
