@@ -359,3 +359,60 @@ for d, df in data.items():
 # Reproduction: architecture/training not reported. 5/9 paper values within our per-split ranges, 2 marginal.
 # Trade-off: early-stopped classifier was ~constant (right for E, broke CPS/PSID weighting); fully trained
 # classifier separates CPS/PSID but overfits E (11 trainees trimmed in a randomised experiment). Not tuned further.
+
+# %% Cell 7: bias-corrected matching — BCM (paper Appendix, item 2; Abadie & Imbens 2006, 2011)
+from sklearn.neighbors import NearestNeighbors
+
+
+def att_bcm(df):
+    """Match each treated unit to its nearest control (with replacement, diagonal Mahalanobis distance),
+    then regress pair outcome differences on pair covariate differences; the intercept is the ATT."""
+    X, t, y = df[COVARIATES].values, df.t.values, df.re78.values
+    Xs = X / X.std(axis=0)                                   # diagonal Mahalanobis: scale each covariate by its s.d.
+
+    nn = NearestNeighbors(n_neighbors=1).fit(Xs[t == 0])     # search among controls only
+    match = nn.kneighbors(Xs[t == 1], return_distance=False)[:, 0]
+
+    y_c, X_c = y[t == 0][match], X[t == 0][match]            # each trainee's matched control
+    dY = y[t == 1] - y_c                                     # earnings gap within each pair
+    dX = X[t == 1] - X_c                                     # how imperfect each match is
+
+    return LinearRegression().fit(dX, dY).intercept_         # effect at zero covariate gap
+
+
+ESTIMATORS["Matching: bias-corrected"] = att_bcm
+
+print({d: round(att_bcm(df), 2) for d, df in data.items()})   # quick check
+# Reproduction: CPS 2.20 vs 2.15 matches; E 1.77 vs 2.12 and PSID -0.07 vs 0.57 do not. Likely tie handling
+# (R Matching averages ties; we pick one), number of matches M and scaling — none reported in the paper.
+
+# %% Cell 8: causal forest — CF (paper Section 4.1; Wager & Athey 2018)
+from econml.dml import CausalForestDML
+
+
+def att_cf_once(df, seed):
+    """Fit a causal forest (with RF nuisance models, cross-fitted), estimate tau(x) per person,
+    and average over the treated to get the ATT."""
+    X, t, y = df[COVARIATES].values, df.t.values, df.re78.values
+    cf = CausalForestDML(
+        model_y=RandomForestRegressor(**RF_PARAMS, random_state=seed),     # E[Y | X]
+        model_t=RandomForestClassifier(**RF_CLF_PARAMS, random_state=seed), # propensity e(X)
+        discrete_treatment=True,
+        cv=N_FOLDS,                     # cross-fitting of the nuisance models, as in our other estimators
+        n_estimators=1000,
+        random_state=seed,
+    )
+    cf.fit(y, t, X=X)
+    return cf.effect(X[t == 1]).mean()   # ATT = average CATE over the treated
+
+
+def att_cf(df):
+    return np.median([att_cf_once(df, seed) for seed in range(N_REPEATS)])
+
+
+ESTIMATORS["Causal forest"] = att_cf
+
+for d, df in data.items():
+    runs = [att_cf_once(df, seed) for seed in range(N_REPEATS)]
+    print(f"{d:5s} per-split: {np.round(runs, 2)}  median={np.median(runs):5.2f}")
+# %%
