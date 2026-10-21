@@ -270,3 +270,35 @@ for d, df in data.items():
 # Reproduction: paper values (1.90 / 0.73 / 0.24) lie within or at the edge of our per-split ranges, but this
 # estimator is highly split-dependent (PSID range -0.32 to 1.27). Trimming drops up to 36/185 PSID trainees,
 # which changes the estimand to the ATT on trainees with overlap.
+
+# %% Cell 6c: doubly robust with random forests + cross-fitting — tau_dr,rf (paper Section 4.1)
+def dr_att_from(t, y, mu0, e):
+    """DR formula from Cell 5: outcome-model estimate minus propensity-weighted control residuals.
+    Applies the paper's trimming rule (drop units with e > 0.95)."""
+    keep = e <= TRIM
+    t, resid, e = t[keep], (y - mu0)[keep], e[keep]
+    w = e / (1 - e)
+    return resid[t == 1].mean() - np.sum(w[t == 0] * resid[t == 0]) / np.sum(w[t == 0])
+
+
+def att_dr_rf_once(df, seed):
+    mu0 = crossfit_mu0(df, make_rf_regressor, seed)    # RF outcome model (same folds: same seed)
+    e = crossfit_e(df, make_rf_classifier, seed)       # RF propensity model
+    return dr_att_from(df.t.values, df.re78.values, mu0, e)
+
+
+def att_dr_rf(df):
+    return np.median([att_dr_rf_once(df, seed) for seed in range(N_REPEATS)])
+
+
+ESTIMATORS["DR: random forest"] = att_dr_rf
+
+# Quick check: per-split estimates and median
+for d, df in data.items():
+    runs = [att_dr_rf_once(df, seed) for seed in range(N_REPEATS)]
+    print(f"{d:5s} per-split: {np.round(runs, 2)}  median={np.median(runs):5.2f}  "
+          f"range width={max(runs) - min(runs):4.2f}")
+
+# Reproduction: paper values (1.93 / 1.63 / 0.98) lie within our per-split ranges. DR did NOT reduce split
+# sensitivity vs RF weighting: extreme RF propensities (min_samples_leaf=1) x large earnings residuals
+# (low outcome-model R2, esp. in E) keep variance high. DR protects against bias, not against extreme weights.
