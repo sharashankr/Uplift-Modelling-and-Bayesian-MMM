@@ -590,4 +590,35 @@ for name, f in FUNCS.items():
     print(f"{name:20s} " + "   ".join(f"{d}: {r.att:5.2f} (se {r.se:.2f} | paper {p:.2f})"
                                        for d, r, p in zip(DESIGNS, cells, PAPER_SE[name])))
 
+# %% Check: is the paper's DIFF SE computed with group sizes swapped?
+for d, df in data.items():
+    s1, s0 = df.re78[df.t == 1].std(), df.re78[df.t == 0].std()
+    n1, n0 = (df.t == 1).sum(), (df.t == 0).sum()
+    print(f"{d:5s} correct={np.sqrt(s1**2/n1 + s0**2/n0):.2f}   swapped={np.sqrt(s1**2/n0 + s0**2/n1):.2f}")
+
+
+# %% Check: flexible family from the module (should equal our earlier medians), with SEs
+importlib.reload(est)
+for learner in ["rf", "nn"]:
+    for d in DESIGNS:
+        res = est.flexible_family(data[d], learner)
+        print(f"{learner} {d:5s} " + "   ".join(f"{k}: {r.att:5.2f} (se {r.se:.2f})" for k, r in res.items()))
+
+
+# %%# %% Check: matching and residual balancing from the module (paper Table 5 s.e. alongside)
+importlib.reload(est)
+PAPER_SE2 = {"BCM": (0.88, 0.87, 1.47), "RB": (0.70, 0.62, 0.79)}
+for name, f in {"BCM": est.att_bcm, "RB": est.att_residual_balancing}.items():
+    cells = [f(data[d]) for d in DESIGNS]
+    print(f"{name:4s} " + "   ".join(f"{d}: {r.att:5.2f} (se {r.se:.2f} | paper {p:.2f})"
+                                     for d, r, p in zip(DESIGNS, cells, PAPER_SE2[name])))
+
+# %% Check: causal forest from the module — DR-corrected ATT with SE
+importlib.reload(est)
+PAPER_CF = {"E": (1.72, 0.68), "CPS": (1.58, 0.67), "PSID": (0.59, 0.78)}
+for d in DESIGNS:
+    r = est.att_causal_forest(data[d])
+    print(f"{d:5s} att={r.att:5.2f} (se {r.se:.2f})   paper {PAPER_CF[d][0]} (se {PAPER_CF[d][1]})   "
+          f"[our earlier plain-average median: {dict(E=1.70, CPS=1.80, PSID=0.45)[d]}]")
+
 # %%
