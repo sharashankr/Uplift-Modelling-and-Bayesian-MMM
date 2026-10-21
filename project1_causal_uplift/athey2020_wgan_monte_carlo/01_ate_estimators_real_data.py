@@ -458,3 +458,118 @@ RESULTS_DIR = DATA_DIR.parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
 table5.to_csv(RESULTS_DIR / "table5_reproduction.csv")
 print(f"\nSaved to {RESULTS_DIR / 'table5_reproduction.csv'}")
+
+# %% Cell 9a: residual balancing, step 1 — approximate balancing weights (Athey, Imbens & Wager 2018, Alg. 1)
+import cvxpy as cp
+from sklearn.preprocessing import StandardScaler
+
+ZETA = 0.5   # paper default: equal weight on dispersion and imbalance
+
+
+def balancing_weights(Zc, zbar_t, zeta=ZETA):
+    """Control weights g: minimise (1-zeta)*sum(g^2) + zeta*s^2, where s bounds every covariate gap
+    |zbar_t - Zc' g|. Constraints (paper Alg. 1): g >= 0, sum(g) = 1, g <= n_c^(-2/3)."""
+    n_c = Zc.shape[0]
+    g = cp.Variable(n_c)
+    s = cp.Variable()                                    # s = largest absolute covariate gap
+    gap = zbar_t - Zc.T @ g
+    problem = cp.Problem(
+        cp.Minimize((1 - zeta) * cp.sum_squares(g) + zeta * cp.square(s)),
+        [gap <= s, -gap <= s, g >= 0, cp.sum(g) == 1, g <= n_c ** (-2 / 3)],
+    )
+    problem.solve(solver=cp.CLARABEL)                    # interior-point solver: more accurate than the default
+    return g.value
+
+
+# Check: balance achieved, effective sample size, and that the constraints hold
+print("solvers available:", cp.installed_solvers())
+for d, df in data.items():
+    Z = StandardScaler().fit_transform(df[COVARIATES])   # covariates in s.d. units (standardising is our assumption)
+    t = df.t.values
+    Zc, zbar_t = Z[t == 0], Z[t == 1].mean(axis=0)
+    g = balancing_weights(Zc, zbar_t)
+
+    gap_raw = np.abs(zbar_t - Zc.mean(axis=0)).max()
+    gap_wtd = np.abs(zbar_t - Zc.T @ g).max()
+    cap = len(Zc) ** (-2 / 3)
+    print(f"{d:5s} gap: {gap_raw:4.2f} -> {gap_wtd:4.2f} s.d.  ESS={1 / np.sum(g ** 2):6.1f} of {len(Zc):,}  |  "
+          f"sum={g.sum():.6f}  min={g.min():.1e}  max={g.max():.5f}  cap={cap:.5f}")
+    
+# %% Cell 9b: residual balancing, step 2 — elastic net + balanced residuals (paper Alg. 1)
+from sklearn.linear_model import ElasticNet, ElasticNetCV
+from sklearn.model_selection import KFold
+
+
+def elastic_net_1se(Z, y, l1_ratio=0.9, n_folds=10, seed=0):
+    """Elastic net with lambda chosen by glmnet's '1-SE rule': the LARGEST lambda whose CV error is
+    within one standard error of the minimum. (sklearn: alpha = lambda, l1_ratio = glmnet's alpha.)"""
+    cv = ElasticNetCV(l1_ratio=l1_ratio, cv=KFold(n_folds, shuffle=True, random_state=seed)).fit(Z, y)
+    mse = cv.mse_path_                                       # shape: (n_lambdas, n_folds)
+    mean, se = mse.mean(axis=1), mse.std(axis=1, ddof=1) / np.sqrt(n_folds)
+    best = mean.argmin()
+    lam_1se = cv.alphas_[mean <= mean[best] + se[best]].max()
+    return ElasticNet(alpha=lam_1se, l1_ratio=l1_ratio).fit(Z, y)
+
+# Balancing on RAW covariates (not standardised) reproduces the paper's PSID estimate (0.77 vs 0.72);
+# standardised gives 1.36. The elastic net always uses standardised covariates (glmnet's internal default).
+# See the sensitivity cell: PSID ranges 0.77-1.81 across unreported choices; CPS stays 1.12-1.23 vs 0.93.
+
+BALANCE_ON_RAW = True
+
+
+def att_residual_balancing(df, return_parts=False):
+    X = df[COVARIATES].values
+    Z = StandardScaler().fit_transform(X)
+    t, y = df.t.values, df.re78.values
+    B = X if BALANCE_ON_RAW else Z                           # scale used for the balancing weights
+
+    gamma = balancing_weights(B[t == 0], B[t == 1].mean(axis=0))   # step 1
+    enet = elastic_net_1se(Z[t == 0], y[t == 0])                   # step 2: outcome model on controls
+    mu_t = enet.predict(Z[t == 1].mean(axis=0)[None, :])[0]
+    resid_c = y[t == 0] - enet.predict(Z[t == 0])
+
+    att = y[t == 1].mean() - (mu_t + gamma @ resid_c)              # step 3
+    if return_parts:
+        weights_only = y[t == 1].mean() - gamma @ y[t == 0]
+        return att, weights_only, int(np.sum(enet.coef_ != 0))
+    return att
+
+
+ESTIMATORS["Residual balancing"] = att_residual_balancing
+
+PAPER_RB = {"E": 1.73, "CPS": 0.93, "PSID": 0.72}
+for d, df in data.items():
+    att, w_only, k = att_residual_balancing(df, return_parts=True)
+    print(f"{d:5s} residual balancing={att:5.2f}  (paper {PAPER_RB[d]})   "
+          f"weights only={w_only:5.2f}   covariates kept by elastic net={k}/8")
+    
+# %% Sensitivity: residual balancing under unreported choices (CPS and PSID)
+def enet_fit(Z, y, rule, seed, l1_ratio=0.9, n_folds=10):
+    cv = ElasticNetCV(l1_ratio=l1_ratio, cv=KFold(n_folds, shuffle=True, random_state=seed)).fit(Z, y)
+    if rule == "min":
+        lam = cv.alpha_                                        # minimum CV error
+    else:
+        mse = cv.mse_path_
+        mean, se = mse.mean(axis=1), mse.std(axis=1, ddof=1) / np.sqrt(n_folds)
+        lam = cv.alphas_[mean <= mean.min() + se[mean.argmin()]].max()   # 1-SE rule
+    return ElasticNet(alpha=lam, l1_ratio=l1_ratio).fit(Z, y)
+
+
+for d in ["CPS", "PSID"]:
+    df = data[d]
+    X, t, y = df[COVARIATES].values, df.t.values, df.re78.values
+    Z = StandardScaler().fit_transform(X)
+    print(f"\n{d}  (paper {PAPER_RB[d]}, benchmark ~1.79)")
+    for scale, B in [("standardised", Z), ("raw units", X)]:
+        gamma = balancing_weights(B[t == 0], B[t == 1].mean(axis=0))      # weights don't depend on the CV seed
+        for rule in ["1se", "min"]:
+            ests = []
+            for seed in range(5):
+                enet = enet_fit(Z[t == 0], y[t == 0], rule, seed)
+                mu_t = enet.predict(Z[t == 1].mean(axis=0)[None, :])[0]
+                resid = y[t == 0] - enet.predict(Z[t == 0])
+                ests.append(y[t == 1].mean() - (mu_t + gamma @ resid))
+            print(f"  balance={scale:12s} lambda={rule:3s}  median={np.median(ests):5.2f}  "
+                  f"range=[{min(ests):5.2f}, {max(ests):5.2f}]")
+
+# %%
