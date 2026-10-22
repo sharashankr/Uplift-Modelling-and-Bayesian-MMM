@@ -177,4 +177,80 @@ for d in DESIGNS:
     top = combined.loc[d].sort_values("rmse").head(3)
     print(f"  {d:5s} " + ", ".join(f"{name} ({r.rmse:.2f})" for name, r in top.iterrows()))
 
+
+# %% Cell 8: write all reproduced tables as Markdown (ours next to the paper's) for the README
+def md_table(df, fmt="{:.2f}"):
+    """Minimal DataFrame -> Markdown table (no extra packages needed)."""
+    def cell(v):
+        if isinstance(v, (float, np.floating)):
+            return "—" if pd.isna(v) else fmt.format(v)
+        return str(v)
+    header = [df.index.name or ""] + [str(c) for c in df.columns]
+    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    lines += ["| " + " | ".join([str(i)] + [cell(v) for v in row]) + " |" for i, row in df.iterrows()]
+    return "\n".join(lines)
+
+
+VARS = ["black", "hispanic", "age", "married", "nodegree", "education", "re74", "re75", "re78"]
+out = []
+
+# ---- Table 1: real data, mean (s.d.) — ours / paper --------------------------------------------------
+PAPER_T1 = {
+    "Trainees (185)":        [(0.84, 0.36), (0.06, 0.24), (25.82, 7.16), (0.19, 0.39), (0.71, 0.46), (10.35, 2.01), (2.10, 4.89), (1.53, 3.22), (6.35, 7.87)],
+    "Exp. controls (260)":   [(0.83, 0.38), (0.11, 0.31), (25.05, 7.06), (0.15, 0.36), (0.83, 0.37), (10.09, 1.61), (2.11, 5.69), (1.27, 3.10), (4.55, 5.48)],
+    "CPS controls (15,992)": [(0.07, 0.26), (0.07, 0.26), (33.23, 11.05), (0.71, 0.45), (0.30, 0.46), (12.03, 2.87), (14.02, 9.57), (13.65, 9.27), (14.85, 9.65)],
+    "PSID controls (2,490)": [(0.25, 0.43), (0.03, 0.18), (34.85, 10.44), (0.87, 0.34), (0.31, 0.46), (12.12, 3.08), (19.43, 13.41), (19.06, 13.60), (21.55, 15.56)],
+}
+raw = {d: pd.read_feather(DATA_DIR / f"ldw_{n}.feather") for d, n in DESIGNS.items()}
+for r in raw.values():
+    r[["re74", "re75", "re78"]] = r[["re74", "re75", "re78"]] / 1000
+real_groups = {"Trainees (185)": raw["E"][raw["E"].t == 1], "Exp. controls (260)": raw["E"][raw["E"].t == 0],
+               "CPS controls (15,992)": raw["CPS"][raw["CPS"].t == 0], "PSID controls (2,490)": raw["PSID"][raw["PSID"].t == 0]}
+t1 = pd.DataFrame({g: [f"{df[v].mean():.2f} ({df[v].std():.2f}) / {PAPER_T1[g][i][0]:.2f} ({PAPER_T1[g][i][1]:.2f})"
+                       for i, v in enumerate(VARS)] for g, df in real_groups.items()}, index=VARS)
+t1.index.name = "variable"
+out += ["### Table 1 — real data: mean (s.d.), ours / paper", "", md_table(t1), ""]
+
+# ---- Table 2: WGAN-generated means — ours / paper ----------------------------------------------------
+PAPER_T2 = {"Trainees (E)": [0.92, 0.03, 25.61, 0.15, 0.69, 10.35, 3.07, 2.06, 5.31],
+            "Exp. controls (E)": [0.91, 0.03, 25.54, 0.10, 0.81, 10.02, 2.13, 1.29, 3.97],
+            "CPS controls": [0.08, 0.07, 32.82, 0.72, 0.29, 12.03, 14.07, 13.73, 14.89],
+            "PSID controls": [0.26, 0.03, 34.95, 0.87, 0.30, 12.32, 19.86, 20.41, 22.62]}
+gen_groups = {"Trainees (E)": pops["E"][pops["E"].t == 1], "Exp. controls (E)": pops["E"][pops["E"].t == 0],
+              "CPS controls": pops["CPS"][pops["CPS"].t == 0], "PSID controls": pops["PSID"][pops["PSID"].t == 0]}
+t2 = pd.DataFrame({g: [f"{df[v].mean():.2f} / {PAPER_T2[g][i]:.2f}" for i, v in enumerate(VARS)]
+                   for g, df in gen_groups.items()}, index=VARS)
+t2.index.name = "variable"
+out += ["### Table 2 — WGAN-generated data: means, ours / paper", "", md_table(t2), ""]
+
+# ---- Tables 6-8: Monte Carlo, ours next to paper ----------------------------------------------------
+ORDER = ["DIFF", "BCM", "Outcome: linear", "RF: outcome", "NN: outcome", "Propensity: logit", "RF: ipw", "NN: ipw",
+         "DR: linear", "RF: dr", "NN: dr", "Causal forest", "Residual balancing"]
+mc = pd.read_csv(RESULTS_DIR / "mc_combined_summary.csv", index_col=[0, 1])
+for d, tab in zip(DESIGNS, [6, 7, 8]):
+    m = mc.loc[d].reindex(ORDER)
+    t = pd.DataFrame({"RMSE ours": m["rmse"], "RMSE paper": m["paper rmse"],
+                      "bias ours": m["bias"], "bias paper": m["paper bias"],
+                      "coverage ours": m["coverage"], "coverage paper": m["paper cov"],
+                      "sdev ours": m["sdev"], "mean SE ours": m["mean se"]})
+    t.index.name = "estimator"
+    out += [f"### Table {tab} — Monte Carlo, {d} design (true ATT {truth[d]:.2f}; 200 replications; paper 2,000)",
+            "", md_table(t), ""]
+
+md = "\n".join(out)
+(RESULTS_DIR / "readme_tables.md").write_text(md)
+print(md)
+
+# %% Cell 9: insert the generated tables into README.md, just above "## Critique"
+readme = HERE / "README.md"
+text = readme.read_text()
+tables = (RESULTS_DIR / "readme_tables.md").read_text()
+
+assert "## Critique" in text, "README draft not found: paste the draft and save first"
+assert "## Reproduced tables" not in text, "tables already inserted"   # stops a double insert if re-run
+
+section = "## Reproduced tables (ours vs paper)\n\n" + tables + "\n\n"
+readme.write_text(text.replace("## Critique", section + "## Critique", 1))
+print("Inserted", tables.count("### Table"), "tables into README.md")
+
 # %%
